@@ -161,3 +161,35 @@ def test_model_can_only_propose_quotes_present_in_original(tmp_path: Path) -> No
         ],
     )
     assert [item["commitment"] for item in created] == ["周五发送修改稿"]
+
+
+def test_owned_unfinished_intent_is_proposed_even_when_model_returns_empty(tmp_path: Path) -> None:
+    message = EmailMessage(policy=SMTP)
+    message["From"] = "agent@example.test"
+    message["To"] = "friend@example.test"
+    message["Subject"] = "Follow-up"
+    message["Message-ID"] = "<owned-intent@example.test>"
+    body = "我打算给那个作者提个 issue，把这层思路还给他。这个我记着，还没办。也许周末出去散步。"
+    message.set_content(body, charset="utf-8")
+    archive = tmp_path / "archive"
+    manifest = MailArchiveStore(archive).archive_sent(
+        {
+            "message_id": str(message["Message-ID"]),
+            "from": str(message["From"]),
+            "to": str(message["To"]),
+            "subject": str(message["Subject"]),
+            "constellation_id": "cst_friend",
+            "raw_message": message.as_bytes(policy=SMTP),
+        }
+    )
+    created = extract_candidates(
+        tmp_path / "commitments.json",
+        archive,
+        constellation_id="cst_friend",
+        archive_id=str(manifest["archive_id"]),
+        extractor=lambda _: [],
+    )
+    assert len(created) == 1
+    assert created[0]["quote"] in body
+    assert created[0]["commitment"] == "给那个作者提个 issue，把这层思路还给他"
+    assert "也许" not in created[0]["quote"]
