@@ -12,6 +12,7 @@ import email
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -334,6 +335,25 @@ asyncio.run(main())"""
     return _parse_model_json(completed.stdout.decode("utf-8", errors="strict"))
 
 
+def _owned_unfinished_candidates(body: str) -> list[dict[str, str]]:
+    """Catch an explicit self-owned unfinished plan without asking the model to infer it."""
+    pattern = re.compile(
+        r"我打算[^！？\n]{1,220}?(?:这个我记着|我记着)[^。！？\n]{0,80}还没办[。！？]?"
+    )
+    candidates: list[dict[str, str]] = []
+    for match in pattern.finditer(body):
+        quote = match.group(0).strip()
+        commitment = re.sub(r"^我打算", "", quote)
+        commitment = re.sub(
+            r"[，,。；;：:\s]*(?:这个我记着|我记着)[，,。；;：:\s]*还没办[。！？]?$",
+            "",
+            commitment,
+        ).strip("，,。；;：: \t")
+        if commitment:
+            candidates.append({"quote": quote, "commitment": commitment})
+    return candidates
+
+
 def extract_candidates(
     ledger_path: Path,
     archive_root: Path,
@@ -344,11 +364,14 @@ def extract_candidates(
 ) -> list[dict[str, Any]]:
     _, _, body = _source(archive_root, archive_id)
     created: list[dict[str, Any]] = []
-    for candidate in extractor(body):
+    candidates = _owned_unfinished_candidates(body) + extractor(body)
+    seen_quotes: set[str] = set()
+    for candidate in candidates:
         quote = str(candidate.get("quote") or "").strip()
         commitment = str(candidate.get("commitment") or "").strip()
-        if not quote or quote not in body or not commitment:
+        if not quote or quote in seen_quotes or quote not in body or not commitment:
             continue
+        seen_quotes.add(quote)
         result = propose(
             ledger_path,
             archive_root,
