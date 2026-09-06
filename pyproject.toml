@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cloude-mail-system"
+version = "0.1.0"
+description = "A durable, evidence-bound mail workflow for long-running AI companions"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {file = "LICENSE"}
+authors = [{name = "Cloude Mail System contributors"}]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "License :: OSI Approved :: MIT License",
+  "Operating System :: POSIX :: Linux",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10"]
+
+[tool.setuptools]
+py-modules = [
+  "correspondence_identity",
+  "mail_archive",
+  "mail_archive_autoclassify",
+  "mail_hotline",
+  "mail_identities",
+  "mail_ledger",
+  "mail_owe_list",
+  "mail_sent_reconcile",
+  "mail_summary_recover",
+  "send_mail",
+]
+package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
