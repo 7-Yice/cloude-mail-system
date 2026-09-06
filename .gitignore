@@ -19,5 +19,5 @@ mail-sent-reconcile/
 correspondence-identities.json
 mail-message-ledger.json
 mail-hotline-state.json
+mail-commitments.json
 relay-wake.env
-

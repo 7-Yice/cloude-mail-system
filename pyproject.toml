@@ -27,6 +27,7 @@ py-modules = [
   "mail_hotline",
   "mail_identities",
   "mail_ledger",
+  "mail_commitments",
   "mail_owe_list",
   "mail_sent_reconcile",
   "mail_summary_recover",
@@ -37,4 +38,3 @@ package-dir = {"" = "src"}
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-

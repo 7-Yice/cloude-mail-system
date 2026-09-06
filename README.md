@@ -21,6 +21,7 @@
 | `mail_hotline.py` | 按 IMAP UID 水位扫描新信，归档、分类、生成提醒并推进游标 |
 | `mail_archive.py` | 原始 `.eml`、清单与派生摘要的原子归档 |
 | `mail_ledger.py` | 新信与通知的幂等账本，失败可释放后重试 |
+| `mail_commitments.py` | 从已发原信提出承诺候选，并由 agent 对照逐字原话逐条确认或判为不成立 |
 | `mail_identities.py` | 私密通信身份账本，支持登记、解析、审计与撤销 |
 | `correspondence_identity.py` | 从真实来信或已验证用户消息登记身份 |
 | `send_mail.py` | 按 `constellation_id` 准备并发送邮件，不接受自由地址 |
@@ -66,6 +67,22 @@ python src/send_mail.py \
   --body-file reply.txt
 ```
 
+成功发送并归档后，系统会旁路扫描写信人明确作出的承诺。模型只能产生
+`pending_review` 候选；引语不在 `.eml` 原件中逐字出现的候选会被丢弃，扫描失败也
+不会诱发邮件重发。审核时一次只处理一条：
+
+```bash
+python src/mail_commitments.py dream
+python src/mail_commitments.py read --id cmt_xxx
+python src/mail_commitments.py review --id cmt_xxx --decision confirm
+python src/mail_commitments.py close --id cmt_xxx --decision complete \
+  --evidence '已完成，见对应发件归档'
+```
+
+状态流为 `待确认 → 进行中 → 已完成 / 已撤销 / 已替代`，误报走“不成立”。没有批量
+确认，也不会因为又寄出一封信就自动销账。建议把 `dream` 查询挂进 agent 已有的周期
+盘库习惯：空抽屉不出声，有候选才逐条查看原话；不要另造催办提醒。
+
 默认情况下，`mail_hotline.py` 会把通知交给 `CLOUDE_RUNTIME_INBOX` 指向的入箱程序。该程序需接受：
 
 ```text
@@ -92,4 +109,3 @@ enqueue --source NAME --event-id ID --mode immediate \
 ## License
 
 [MIT](LICENSE)
-
