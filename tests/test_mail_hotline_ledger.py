@@ -259,13 +259,24 @@ def test_notification_is_full_original_not_a_summary(monkeypatch: pytest.MonkeyP
         lambda *args, **kwargs: calls.append((args, kwargs)),
     )
     mail_hotline.notify_companion(
-        {**sample_message(), "body": "完整原信本体在首次呈现。"},
+        {
+            **sample_message(),
+            "body": "完整原信本体在首次呈现。",
+            "constellation_id": "cst_friend",
+            "reply_note": "上次聊到测试计划",
+            "commitment_context": {
+                "active": ["周五发送修改稿"],
+                "pending_review_count": 1,
+            },
+        },
         "rfc822:<letter-44@example.test>",
     )
     command = calls[0][0][0]
     options = calls[0][1]
     assert "mail_hotline" in command
     assert "完整原信本体在首次呈现。" in options["input"]
+    assert "尚欠对方：周五发送修改稿" in options["input"]
+    assert "待确认承诺：1 条" in options["input"]
     assert "summary" not in options["input"]
 
 
