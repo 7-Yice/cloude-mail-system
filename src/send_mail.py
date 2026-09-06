@@ -9,6 +9,7 @@ import json
 import os
 import smtplib
 import ssl
+import subprocess
 import sys
 from email.message import EmailMessage
 from email.policy import SMTP
@@ -33,6 +34,9 @@ DEFAULT_OMBRE_ENV = Path(os.environ.get("OMBRE_ENV_FILE", str(Path.home() / "omb
 DEFAULT_OMBRE_MCP_URL = os.environ.get("OMBRE_MCP_URL", "http://127.0.0.1:18001/mcp")
 DEFAULT_ARCHIVE = Path(os.environ.get("CLOUDE_MAIL_ARCHIVE_DIR", str(RUNTIME_ROOT / "mail-archive")))
 DEFAULT_RECONCILE = Path(os.environ.get("CLOUDE_MAIL_RECONCILE_DIR", str(RUNTIME_ROOT / "mail-sent-reconcile")))
+DEFAULT_COMMITMENT_LEDGER = Path(
+    os.environ.get("CLOUDE_MAIL_COMMITMENT_LEDGER", str(RUNTIME_ROOT / "mail-commitments.json"))
+)
 USER_KEYS = ("GMAIL_USER", "MAIL_USER", "IMAP_USER")
 PASSWORD_KEYS = ("GMAIL_APP_PASSWORD", "MAIL_PASS", "IMAP_PASS")
 
@@ -309,6 +313,31 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def scan_sent_commitments(
+    *, archive_root: Path, constellation_id: str, archive_id: str,
+    ledger_path: Path = DEFAULT_COMMITMENT_LEDGER,
+) -> dict[str, Any]:
+    """Scan after durable delivery; failure must never invite an SMTP retry."""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(Path(__file__).with_name("mail_commitments.py")),
+            "--archive-root", str(archive_root),
+            "--ledger", str(ledger_path),
+            "extract",
+            "--constellation-id", constellation_id,
+            "--archive-id", archive_id,
+        ],
+        capture_output=True, text=True, check=False, timeout=180,
+    )
+    if completed.returncode != 0:
+        raise RuntimeError((completed.stderr or completed.stdout).strip()[:300])
+    value = json.loads(completed.stdout)
+    if value.get("status") != "ok":
+        raise RuntimeError("commitment scan did not return ok")
+    return value
+
+
 def main() -> int:
     args = parse_args()
     try:
@@ -339,6 +368,22 @@ def main() -> int:
             reconcile_root=args.reconcile_root,
             smtp_factory=smtp_factory_from_env(env),
         )
+        if result.get("status") == "sent_and_archived":
+            try:
+                scan = scan_sent_commitments(
+                    archive_root=args.archive_root,
+                    constellation_id=args.constellation_id,
+                    archive_id=str(result["archive_id"]),
+                )
+                result["commitment_scan"] = {
+                    "status": "ready",
+                    "created_count": len(scan.get("created") or []),
+                }
+            except Exception as exc:
+                result["commitment_scan"] = {
+                    "status": "pending_after_failure",
+                    "error": str(exc)[:240],
+                }
     except (OSError, UnicodeError, ValueError, IdentityError) as exc:
         result = {"status": "not_sent", "error": str(exc)}
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))

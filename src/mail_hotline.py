@@ -25,6 +25,7 @@ from typing import Any, Callable, Iterator
 from contextlib import contextmanager
 
 from mail_archive import MailArchiveError, MailArchiveStore
+from mail_commitments import active_summary
 from mail_identities import ProtectedIdentityStore, address_from_header
 from mail_ledger import MessageLedger, message_key
 from mail_owe_list import maybe_notify_overdue
@@ -358,10 +359,21 @@ def _reply_entry_lines(message: dict[str, Any]) -> list[str]:
             "上次聊到：首封",
         ]
     note = " ".join(str(message.get("reply_note") or "暂不可用").split())
-    return [
+    lines = [
         f"一步回信：constellation_id={constellation_id}",
         f"上次聊到：{note}",
     ]
+    context = message.get("commitment_context")
+    if isinstance(context, dict):
+        active = [str(item) for item in context.get("active", []) if str(item).strip()]
+        if active:
+            lines.append("尚欠对方：" + "；".join(active[:3]))
+            if len(active) > 3:
+                lines.append(f"另有 {len(active) - 3} 项进行中承诺")
+        pending = int(context.get("pending_review_count") or 0)
+        if pending:
+            lines.append(f"待确认承诺：{pending} 条（在 dream 审核抽屉逐条核原话）")
+    return lines
 
 
 def prepare_reply_note(
@@ -468,6 +480,7 @@ def process_messages(
     summarize: Callable[[dict[str, Any]], None] | None = None,
     classify: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
     prepare_reply: Callable[[str], str] | None = None,
+    commitment_context: Callable[[str], dict[str, Any]] | None = None,
 ) -> int:
     delivered = 0
     for message in messages:
@@ -507,6 +520,15 @@ def process_messages(
                 message["reply_note"] = "暂不可用"
                 print(
                     f"mail_hotline: reply entry note deferred for {notification_id}: "
+                    f"{type(exc).__name__}: {str(exc)[:240]}",
+                    file=sys.stderr,
+                )
+        if constellation_id and commitment_context is not None:
+            try:
+                message["commitment_context"] = commitment_context(constellation_id)
+            except Exception as exc:
+                print(
+                    f"mail_hotline: commitment context deferred for {notification_id}: "
                     f"{type(exc).__name__}: {str(exc)[:240]}",
                     file=sys.stderr,
                 )
@@ -560,6 +582,9 @@ def main() -> int:
                     message, identity_store
                 ),
                 prepare_reply=prepare_reply_note,
+                commitment_context=lambda constellation_id: active_summary(
+                    RUNTIME_ROOT / "mail-commitments.json", constellation_id
+                ),
             )
             # Advancing only after archive/ledger/Runtime Inbox processing avoids
             # permanently skipping a message when any downstream step fails.

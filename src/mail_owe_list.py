@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Iterable
 
 from mail_identities import IdentityError
+from mail_commitments import active_summary
 from send_mail import (
     DEFAULT_OMBRE_ENV,
     DEFAULT_OMBRE_MCP_URL,
@@ -49,6 +50,9 @@ RUNTIME_INBOX = Path(os.environ.get("CLOUDE_RUNTIME_INBOX", str(Path.home() / "r
 IMAP_HOST = os.environ.get("IMAP_HOST", "imap.gmail.com")
 IMAP_PORT = int(os.environ.get("IMAP_PORT", "993"))
 SCAN_INTERVAL_SECONDS = int(os.environ.get("CLOUDE_MAIL_OWE_INTERVAL", str(6 * 60 * 60)))
+COMMITMENT_LEDGER = Path(
+    os.environ.get("CLOUDE_MAIL_COMMITMENT_LEDGER", str(RUNTIME_ROOT / "mail-commitments.json"))
+)
 
 
 def _decode_header(value: str | None) -> str:
@@ -289,6 +293,7 @@ def build_owe_rows(
     *,
     now: dt.datetime | None = None,
     constellation_names: dict[str, str] | None = None,
+    commitments_by_constellation: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     current = (now or dt.datetime.now(dt.timezone.utc)).astimezone(dt.timezone.utc)
     grouped: dict[str, dict[str, list[dict[str, Any]]]] = {
@@ -334,6 +339,9 @@ def build_owe_rows(
                 "my_last_summary": summaries.get(
                     str(my_last.get("message_id") or ""), "暂无已生成摘要"
                 ) if my_last else "尚未发过",
+                "commitments": (commitments_by_constellation or {}).get(
+                    constellation_id, {"active": [], "pending_review_count": 0}
+                ),
             }
         )
     return sorted(
@@ -350,12 +358,21 @@ def collect_report(*, now: dt.datetime | None = None) -> list[dict[str, Any]]:
     identities = _active_identities()
     summaries = _sent_excerpt_by_message_id()
     summaries.update(_summary_by_message_id())
+    commitment_context = {
+        constellation_id: active_summary(COMMITMENT_LEDGER, constellation_id)
+        for constellation_id in {
+            str(row.get("constellation_id") or "").strip()
+            for row in identities.values()
+            if str(row.get("constellation_id") or "").strip()
+        }
+    }
     return build_owe_rows(
         fetch_mail_history(now=now),
         identities,
         summaries,
         now=now,
         constellation_names=_constellation_names(identities),
+        commitments_by_constellation=commitment_context,
     )
 
 
@@ -369,6 +386,9 @@ def render_text(rows: Iterable[dict[str, Any]]) -> str:
             f"他最后：{row['their_last_subject']}｜模型摘要：{row['their_last_summary']}｜"
             f"我最后：{my_last}｜正文摘要：{row['my_last_summary']}"
         )
+        commitments = row.get("commitments")
+        if isinstance(commitments, dict) and commitments.get("active"):
+            lines.append("  尚欠对方：" + "；".join(commitments["active"]))
     return "\n".join(lines) if lines else "暂无通信记录"
 
 
