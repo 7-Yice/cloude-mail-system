@@ -8,6 +8,7 @@ Only a one-at-a-time review against an exact quote can do that.
 from __future__ import annotations
 
 import argparse
+from difflib import SequenceMatcher
 import email
 import hashlib
 import json
@@ -15,6 +16,7 @@ import os
 import re
 import subprocess
 import sys
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
@@ -177,6 +179,31 @@ def list_items(
     return sorted(items, key=lambda item: str(item.get("proposed_at") or ""))
 
 
+def _quote_shape(value: str) -> str:
+    """Normalize presentation differences without interpreting the sentence."""
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    return "".join(char for char in normalized if char.isalnum())
+
+
+def _suspected_quote_of(ledger_path: Path, quote: str) -> str | None:
+    candidate = _quote_shape(quote)
+    if len(candidate) < 12:
+        return None
+    best_id: str | None = None
+    best_score = 0.0
+    for commitment_id, item in _states(ledger_path).items():
+        previous = _quote_shape(str(item.get("quote") or ""))
+        if len(previous) < 12:
+            continue
+        score = SequenceMatcher(None, candidate, previous, autojunk=False).ratio()
+        if candidate in previous or previous in candidate:
+            score = max(score, min(len(candidate), len(previous)) / max(len(candidate), len(previous)))
+        if score >= 0.82 and score > best_score:
+            best_id = commitment_id
+            best_score = score
+    return best_id
+
+
 def propose(
     ledger_path: Path,
     archive_root: Path,
@@ -201,6 +228,7 @@ def propose(
     existing = _states(ledger_path).get(commitment_id)
     if existing:
         return {**existing, "created": False}
+    suspected_quote_of = _suspected_quote_of(ledger_path, quote)
     event = {
         "event": "proposed",
         "commitment_id": commitment_id,
@@ -218,6 +246,8 @@ def propose(
         "proposed_by": proposed_by,
         "proposed_at": _now(),
     }
+    if suspected_quote_of:
+        event["suspected_quote_of"] = suspected_quote_of
     _append_event(ledger_path, event)
     return {**event, "status": "pending_review", "created": True}
 

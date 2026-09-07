@@ -47,6 +47,26 @@ def archived_sent(tmp_path: Path) -> tuple[Path, str]:
     return root, str(manifest["archive_id"])
 
 
+def archive_body(root: Path, *, body: str, message_id: str) -> str:
+    message = EmailMessage(policy=SMTP)
+    message["From"] = "agent@example.test"
+    message["To"] = "friend@example.test"
+    message["Subject"] = "Follow-up"
+    message["Message-ID"] = message_id
+    message.set_content(body, charset="utf-8")
+    manifest = MailArchiveStore(root).archive_sent(
+        {
+            "message_id": str(message["Message-ID"]),
+            "from": str(message["From"]),
+            "to": str(message["To"]),
+            "subject": str(message["Subject"]),
+            "constellation_id": "cst_friend",
+            "raw_message": message.as_bytes(policy=SMTP),
+        }
+    )
+    return str(manifest["archive_id"])
+
+
 def test_proposal_requires_exact_quote_and_is_idempotent(tmp_path: Path) -> None:
     archive, archive_id = archived_sent(tmp_path)
     ledger = tmp_path / "commitments.json"
@@ -193,3 +213,63 @@ def test_owned_unfinished_intent_is_proposed_even_when_model_returns_empty(tmp_p
     assert created[0]["quote"] in body
     assert created[0]["commitment"] == "给那个作者提个 issue，把这层思路还给他"
     assert "也许" not in created[0]["quote"]
+
+
+def test_quoted_completed_commitment_is_flagged_everywhere(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    ledger = tmp_path / "commitments.json"
+    old_quote = "我打算给作者提个 issue，把这层思路还给他。这个我记着，还没办。"
+    old_archive_id = archive_body(
+        archive, body=old_quote, message_id="<old-promise@example.test>"
+    )
+    old = propose(
+        ledger,
+        archive,
+        constellation_id="cst_friend",
+        archive_id=old_archive_id,
+        quote=old_quote,
+        commitment="给作者提 issue",
+    )
+    review(ledger, archive, old["commitment_id"], "confirm")
+    close_item(ledger, old["commitment_id"], "complete", "issue 已提交")
+
+    quoted = "我打算给作者提个issue……这个我记着，还没办"
+    new_archive_id = archive_body(
+        archive,
+        body=f"我昨晚写过：\"{quoted}\"——今天已经办完。",
+        message_id="<quoted-promise@example.test>",
+    )
+    new = propose(
+        ledger,
+        archive,
+        constellation_id="cst_friend",
+        archive_id=new_archive_id,
+        quote=quoted,
+        commitment="给作者提 issue",
+    )
+    assert new["suspected_quote_of"] == old["commitment_id"]
+    listed = list_items(ledger, status="pending_review")
+    assert listed[0]["suspected_quote_of"] == old["commitment_id"]
+    assert dream_card(ledger, archive)["item"]["suspected_quote_of"] == old["commitment_id"]
+
+
+def test_new_commitment_has_no_quote_suspicion_and_condition_is_not_captured(tmp_path: Path) -> None:
+    archive = tmp_path / "archive"
+    ledger = tmp_path / "commitments.json"
+    archive_id = archive_body(
+        archive,
+        body="我答应周五寄出新稿。真要打包，等你说一声。",
+        message_id="<new-promise@example.test>",
+    )
+    created = extract_candidates(
+        ledger,
+        archive,
+        constellation_id="cst_friend",
+        archive_id=archive_id,
+        extractor=lambda _: [
+            {"quote": "我答应周五寄出新稿。", "commitment": "周五寄出新稿"}
+        ],
+    )
+    assert len(created) == 1
+    assert "suspected_quote_of" not in created[0]
+    assert all("真要打包" not in item["quote"] for item in list_items(ledger))
