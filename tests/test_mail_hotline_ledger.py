@@ -251,7 +251,9 @@ def test_archive_failure_is_not_reported_as_a_successful_archive(tmp_path: Path)
     assert not (tmp_path / "ledger.json").exists()
 
 
-def test_notification_is_full_original_not_a_summary(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_notification_is_a_brief_event_with_a_concrete_prep_command(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
     monkeypatch.setattr(
         mail_hotline.subprocess,
@@ -261,23 +263,23 @@ def test_notification_is_full_original_not_a_summary(monkeypatch: pytest.MonkeyP
     mail_hotline.notify_companion(
         {
             **sample_message(),
+            "from": "示例笔友 <penpal@example.test>",
+            "subject": "XXX",
             "body": "完整原信本体在首次呈现。",
             "constellation_id": "cst_friend",
-            "reply_note": "上次聊到测试计划",
-            "commitment_context": {
-                "active": ["周五发送修改稿"],
-                "pending_review_count": 1,
-            },
         },
         "rfc822:<letter-44@example.test>",
     )
     command = calls[0][0][0]
     options = calls[0][1]
     assert "mail_hotline" in command
-    assert "完整原信本体在首次呈现。" in options["input"]
-    assert "尚欠对方：周五发送修改稿" in options["input"]
-    assert "待确认承诺：1 条" in options["input"]
-    assert "summary" not in options["input"]
+    assert options["input"] == (
+        "📬 示例笔友 来信了：《XXX》\n"
+        "回信前先看对账台：prep_mail.py 示例笔友"
+    )
+    assert "完整原信本体" not in options["input"]
+    assert "上次聊到" not in options["input"]
+    assert "一步回信" not in options["input"]
 
 
 def test_repeat_poll_and_restart_write_one_marker_and_one_notice(tmp_path: Path) -> None:

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import email
 import email.header
+import email.utils
 import hashlib
 import imaplib
 import json
@@ -25,16 +26,9 @@ from typing import Any, Callable, Iterator
 from contextlib import contextmanager
 
 from mail_archive import MailArchiveError, MailArchiveStore
-from mail_commitments import active_summary
 from mail_identities import ProtectedIdentityStore, address_from_header
 from mail_ledger import MessageLedger, message_key
 from mail_owe_list import maybe_notify_overdue
-from send_mail import (
-    DEFAULT_OMBRE_ENV,
-    DEFAULT_OMBRE_MCP_URL,
-    _mcp_tool_json,
-    read_env,
-)
 
 try:  # The production cron host is Linux; fixtures also run on Windows.
     import fcntl
@@ -313,24 +307,20 @@ def check_gmail(password: str) -> tuple[list[dict[str, Any]], str, int | None]:
 
 def notify_companion(message: dict[str, Any], notification_id: str) -> None:
     archive_error = str(message.get("archive_error") or "").strip()
-    headline = "📬 新邮件到了！"
+    sender_name, _ = email.utils.parseaddr(str(message.get("from") or ""))
+    sender = sender_name.strip() or str(message.get("constellation_id") or "").strip()
+    if not sender:
+        sender = "未署名发件人"
+    subject = str(message.get("subject") or "(无主题)").strip()
+    headline = f"📬 {sender} 来信了：《{subject}》"
     if archive_error:
-        headline = "⚠️ 已收到邮件，但原件归档失败（请勿当作已归档）："
-    text = "\n".join(
-        [
-            headline,
-            f"  来自: {message['from']}",
-            f"  主题: {message['subject']}",
-            f"  日期: {message['date']}",
-            "",
-            "—— 来信完整正文 ——",
-            str(message.get("body") or "（此邮件无可读文本正文；完整 MIME 原件见归档指针）"),
-            "",
-            *_reply_entry_lines(message),
-        ]
-    )
+        headline += "（原件归档失败）"
+    text = "\n".join([
+        headline,
+        f"回信前先看对账台：prep_mail.py {sender}",
+    ])
     if archive_error:
-        text += f"\n\n归档错误：{archive_error}"
+        text += f"\n归档错误：{archive_error}"
     event_id = "mail-" + hashlib.sha256(
         notification_id.encode("utf-8")
     ).hexdigest()[:32]
@@ -349,54 +339,6 @@ def notify_companion(message: dict[str, Any], notification_id: str) -> None:
         input=text, text=True, check=True, timeout=12,
         stdout=subprocess.PIPE,
     )
-
-
-def _reply_entry_lines(message: dict[str, Any]) -> list[str]:
-    constellation_id = str(message.get("constellation_id") or "").strip()
-    if not constellation_id:
-        return [
-            "一步回信：未登记，需 register-from-mail",
-            "上次聊到：首封",
-        ]
-    note = " ".join(str(message.get("reply_note") or "暂不可用").split())
-    lines = [
-        f"一步回信：constellation_id={constellation_id}",
-        f"上次聊到：{note}",
-    ]
-    context = message.get("commitment_context")
-    if isinstance(context, dict):
-        active = [str(item) for item in context.get("active", []) if str(item).strip()]
-        if active:
-            lines.append("尚欠对方：" + "；".join(active[:3]))
-            if len(active) > 3:
-                lines.append(f"另有 {len(active) - 3} 项进行中承诺")
-        pending = int(context.get("pending_review_count") or 0)
-        if pending:
-            lines.append(f"待确认承诺：{pending} 条（在 dream 审核抽屉逐条核原话）")
-    return lines
-
-
-def prepare_reply_note(
-    constellation_id: str,
-    *,
-    mcp_env: Path = DEFAULT_OMBRE_ENV,
-    mcp_url: str = DEFAULT_OMBRE_MCP_URL,
-) -> str:
-    token = str(read_env(mcp_env).get("OMBRE_MCP_TOKEN") or "")
-    result = _mcp_tool_json(
-        url=mcp_url,
-        token=token,
-        name="prepare_mail_reply",
-        arguments={
-            "constellation_id": constellation_id,
-            "cursor": 0,
-            "max_tokens": 600,
-        },
-    )
-    note = " ".join(str(result.get("latest_sent_note") or "").split())
-    if not note:
-        raise RuntimeError("prepare_mail_reply returned no latest_sent_note")
-    return note
 
 
 def summarize_with_ombre(message: dict[str, Any], archive_store: MailArchiveStore) -> None:
@@ -479,8 +421,6 @@ def process_messages(
     archive_store: MailArchiveStore | None = None,
     summarize: Callable[[dict[str, Any]], None] | None = None,
     classify: Callable[[dict[str, Any]], dict[str, Any] | None] | None = None,
-    prepare_reply: Callable[[str], str] | None = None,
-    commitment_context: Callable[[str], dict[str, Any]] | None = None,
 ) -> int:
     delivered = 0
     for message in messages:
@@ -512,26 +452,6 @@ def process_messages(
             message["archive_manifest"] = manifest["original_file"]
             message["_archive_manifest"] = manifest
             message["summary_status"] = "pending"
-        constellation_id = str(message.get("constellation_id") or "").strip()
-        if constellation_id and prepare_reply is not None:
-            try:
-                message["reply_note"] = prepare_reply(constellation_id)
-            except Exception as exc:
-                message["reply_note"] = "暂不可用"
-                print(
-                    f"mail_hotline: reply entry note deferred for {notification_id}: "
-                    f"{type(exc).__name__}: {str(exc)[:240]}",
-                    file=sys.stderr,
-                )
-        if constellation_id and commitment_context is not None:
-            try:
-                message["commitment_context"] = commitment_context(constellation_id)
-            except Exception as exc:
-                print(
-                    f"mail_hotline: commitment context deferred for {notification_id}: "
-                    f"{type(exc).__name__}: {str(exc)[:240]}",
-                    file=sys.stderr,
-                )
         token = ledger.claim_notification(message)
         if token is None:
             continue
@@ -580,10 +500,6 @@ def main() -> int:
                 summarize=lambda message: summarize_with_ombre(message, archive_store),
                 classify=lambda message: classify_from_protected_identity(
                     message, identity_store
-                ),
-                prepare_reply=prepare_reply_note,
-                commitment_context=lambda constellation_id: active_summary(
-                    RUNTIME_ROOT / "mail-commitments.json", constellation_id
                 ),
             )
             # Advancing only after archive/ledger/Runtime Inbox processing avoids

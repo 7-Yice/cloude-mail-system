@@ -19,6 +19,9 @@ classifiers = [
 [project.optional-dependencies]
 dev = ["pytest>=8,<10"]
 
+[project.scripts]
+prep_mail = "prep_mail:main"
+
 [tool.setuptools]
 py-modules = [
   "correspondence_identity",
@@ -29,6 +32,7 @@ py-modules = [
   "mail_ledger",
   "mail_commitments",
   "mail_owe_list",
+  "prep_mail",
   "mail_sent_reconcile",
   "mail_summary_recover",
   "send_mail",
